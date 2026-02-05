@@ -1,0 +1,182 @@
+# ============================================
+# EKS集群配置文件
+# 用于创建AWS EKS集群和节点组
+# ============================================
+
+apiVersion: eksctl.io/v1alpha5
+kind: ClusterConfig
+
+# ============================================
+# 集群基本信息
+# ============================================
+metadata:
+  name: mao-quotes-cluster  # 集群名称
+  region: us-east-1          # AWS区域（与ECR一致）
+  version: "1.30"            # Kubernetes版本（与本地kubectl版本一致）
+
+# ============================================
+# 可用区配置
+# ============================================
+availabilityZones:
+  - us-east-1a  # 可用区1
+  - us-east-1b  # 可用区2
+
+# 说明：
+# - 使用多个可用区（AZ）实现高可用
+# - 如果一个AZ故障，另一个AZ继续服务
+# - 生产环境建议至少2个AZ，最好3个
+
+# ============================================
+# 节点组配置（Worker Nodes）
+# ============================================
+managedNodeGroups:
+  - name: ng-1  # 节点组名称
+    
+    # 实例类型
+    instanceType: t3.small
+    # t3.small: 2 vCPU, 2GB RAM
+    # 成本：约$0.0208/小时
+    # 适合学习和小型应用
+    # 生产环境可能用 t3.medium 或更大
+    
+    # 节点数量
+    desiredCapacity: 2  # 期望节点数
+    minSize: 2          # 最小节点数
+    maxSize: 4          # 最大节点数（配合Cluster Autoscaler）
+    
+    # 说明：
+    # - 2个节点分布在2个AZ，实现高可用
+    # - 每个AZ至少1个节点
+    # - 可以配置Cluster Autoscaler自动扩缩容
+    
+    # 磁盘配置
+    volumeSize: 20  # EBS卷大小（GB）
+    volumeType: gp3  # gp3: 最新一代SSD（比gp2性能好、更便宜）
+    
+    # SSH访问（可选，生产环境不建议）
+    # ssh:
+    #   allow: true
+    #   publicKeyPath: ~/.ssh/id_rsa.pub
+    
+    # 标签（用于成本追踪和资源管理）
+    labels:
+      role: worker
+      environment: learning
+      project: mao-quotes
+    
+    # IAM策略
+    iam:
+      withAddonPolicies:
+        imageBuilder: true          # 允许构建镜像（可选）
+        autoScaler: true            # 允许Cluster Autoscaler
+        externalDNS: true           # 允许External DNS
+        certManager: true           # 允许Cert Manager
+        appMesh: false              # 不需要App Mesh
+        ebs: true                   # 允许挂载EBS卷
+        fsx: false                  # 不需要FSx
+        efs: true                   # 允许挂载EFS
+        albIngress: true            # 允许ALB Ingress Controller
+        xRay: false                 # 不需要X-Ray
+        cloudWatch: true            # 允许CloudWatch日志和指标
+
+# ============================================
+# IAM OIDC Provider（用于Pod级别的IAM角色）
+# ============================================
+iam:
+  withOIDC: true
+  # 说明：
+  # - 启用OIDC（OpenID Connect）
+  # - 允许Pod使用IAM角色（IRSA: IAM Roles for Service Accounts）
+  # - 例：Pod直接访问S3、DynamoDB等AWS服务
+  # - 更安全：不需要在Pod中配置Access Key
+
+# ============================================
+# VPC配置（可选，不指定则自动创建）
+# ============================================
+# vpc:
+#   cidr: 192.168.0.0/16
+#   nat:
+#     gateway: HighlyAvailable  # 每个AZ一个NAT Gateway（高可用但贵）
+    
+# 说明：
+# - 不指定VPC时，eksctl自动创建：
+#   * 1个VPC
+#   * 2个公有子网（用于ALB）
+#   * 2个私有子网（用于Worker节点）
+#   * 1个Internet Gateway
+#   * 2个NAT Gateway（每个AZ一个）
+# - NAT Gateway成本：$0.045/小时 × 2 = $0.09/小时
+
+# ============================================
+# CloudWatch日志（控制平面日志）
+# ============================================
+cloudWatch:
+  clusterLogging:
+    enableTypes:
+      - api           # API Server日志
+      - audit         # 审计日志
+      - authenticator # 认证日志
+      - controllerManager  # Controller Manager日志
+      - scheduler     # Scheduler日志
+    # 说明：
+    # - 所有控制平面日志发送到CloudWatch
+    # - 用于故障排查和安全审计
+    # - 成本：按日志量计费（通常很少）
+
+# ============================================
+# 附加组件（可选）
+# ============================================
+addons:
+  - name: vpc-cni  # AWS VPC CNI插件
+    version: latest
+  - name: coredns  # DNS解析
+    version: latest
+  - name: kube-proxy  # 网络代理
+    version: latest
+
+# ============================================
+# 面试知识点
+# ============================================
+# 
+# Q1: 为什么选择t3.small而不是t3.micro？
+# A: t3.micro只有1GB RAM，K8s组件（kubelet、kube-proxy）+ 应用
+#    会占用大部分内存，容易OOM。t3.small 2GB RAM更稳定。
+#
+# Q2: 为什么需要2个节点？
+# A: 高可用！1个节点故障或升级时，另1个继续服务。
+#    单节点 = 单点故障（Single Point of Failure）
+#
+# Q3: managedNodeGroups vs nodeGroups？
+# A: managedNodeGroups = AWS托管节点组
+#    - 自动更新
+#    - 自动修复不健康节点
+#    - 简化运维
+#    nodeGroups = 自管理节点组（EC2 Auto Scaling Group）
+#    - 完全控制
+#    - 需要自己管理更新
+#
+# Q4: 为什么需要OIDC？
+# A: 实现Pod级别的IAM权限（IRSA）
+#    没有OIDC：所有Pod共享节点IAM角色（权限太大，不安全）
+#    有OIDC：每个Pod可以有独立IAM角色（最小权限原则）
+#
+# Q5: 为什么控制平面日志重要？
+# A: 故障排查、安全审计、合规要求
+#    示例：API请求失败、认证问题、性能分析
+
+# ============================================
+# 成本估算（按小时）
+# ============================================
+# EKS控制平面：$0.10/小时
+# Worker节点：2 × t3.small × $0.0208 = $0.0416/小时
+# NAT Gateway：2 × $0.045 = $0.09/小时
+# EBS存储：2 × 20GB × $0.10/GB/月 ÷ 730小时 ≈ $0.005/小时
+# CloudWatch日志：~$0.005/小时
+# 
+# 总计：约 $0.24/小时 = $5.76/天 = $173/月
+#
+# 省钱技巧：
+# 1. 用完立即删除（$0.24 × 1小时 = $0.24）
+# 2. 使用Spot实例节点（便宜70%，但可能被回收）
+# 3. 减少NAT Gateway（用1个而不是2个，但牺牲高可用）
+# 4. 使用t3.micro（便宜但可能不够用）

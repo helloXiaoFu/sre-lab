@@ -1,0 +1,242 @@
+# ============================================
+# Kubernetes ConfigMap配置
+# 用途：存储非敏感配置（环境变量、配置文件）
+# ============================================
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mao-quotes-api-config
+  labels:
+    app: mao-api
+data:
+  # ============================================
+  # 应用配置（键值对）
+  # ============================================
+  ENV: "production"
+  LOG_LEVEL: "info"
+  WORKERS: "1"
+  
+  # 面试问题：ConfigMap vs Secret？
+  # 答案：
+  # ConfigMap:
+  # - 非敏感配置（环境、日志级别）
+  # - Base64编码（可选）
+  # - 明文存储
+  # 
+  # Secret:
+  # - 敏感信息（密码、密钥、token）
+  # - Base64编码（必须）
+  # - 可以加密存储（at rest encryption）
+  # - 权限控制更严格
+  
+  # ============================================
+  # 配置文件（多行字符串）
+  # ============================================
+  app.conf: |
+    # 应用配置文件示例
+    [server]
+    host = 0.0.0.0
+    port = 8000
+    
+    [logging]
+    level = info
+    format = json
+    
+    [metrics]
+    enabled = true
+    port = 9090
+
+  # ============================================
+  # 面试高频知识点
+  # ============================================
+  #
+  # 1. ConfigMap的4种使用方式
+  #    
+  #    方式1：环境变量（单个值）
+  #    env:
+  #    - name: ENV
+  #      valueFrom:
+  #        configMapKeyRef:
+  #          name: mao-quotes-api-config
+  #          key: ENV
+  #    
+  #    方式2：环境变量（全部值）
+  #    envFrom:
+  #    - configMapRef:
+  #        name: mao-quotes-api-config
+  #    
+  #    方式3：命令行参数
+  #    command: ["python", "main.py"]
+  #    args:
+  #    - "--env=$(ENV)"
+  #    env:
+  #    - name: ENV
+  #      valueFrom:
+  #        configMapKeyRef:
+  #          name: mao-quotes-api-config
+  #          key: ENV
+  #    
+  #    方式4：挂载为文件
+  #    volumeMounts:
+  #    - name: config
+  #      mountPath: /etc/config
+  #    volumes:
+  #    - name: config
+  #      configMap:
+  #        name: mao-quotes-api-config
+  #
+  # 2. ConfigMap更新
+  #    - 更新ConfigMap后，需要重启Pod生效（环境变量方式）
+  #    - 挂载文件方式：自动更新（10秒-1分钟延迟）
+  #    - 使用Deployment滚动更新确保平滑
+  #
+  # 3. ConfigMap限制
+  #    - 大小限制：单个ConfigMap最大1MB
+  #    - 命名空间隔离：只能在同一namespace使用
+  #    - 不适合大文件：考虑使用Volume或外部存储
+  #
+  # 4. 最佳实践
+  #    - 每个应用一个ConfigMap
+  #    - 使用labels标记版本
+  #    - 敏感信息用Secret
+  #    - 配置变更记录在Git
+  #
+  # 5. 与Docker对比
+  #    docker run -e ENV=prod  ← 环境变量
+  #    docker run -v config:/etc/config  ← 配置文件
+  #    ↓
+  #    ConfigMap ← 统一管理，版本控制
+
+---
+# ============================================
+# Secret示例（敏感信息）
+# ============================================
+apiVersion: v1
+kind: Secret
+metadata:
+  name: mao-quotes-api-secret
+  labels:
+    app: mao-api
+type: Opaque
+data:
+  # Base64编码（不是加密！）
+  # echo -n "mysecretpassword" | base64
+  DB_PASSWORD: bXlzZWNyZXRwYXNzd29yZA==
+  API_KEY: YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXo=
+
+# 面试问题：Secret的Base64编码安全吗？
+# 答案：
+# - Base64不是加密，是编码
+# - 可以轻易解码：echo "bXlzZWNyZXRwYXNzd29yZA==" | base64 -d
+# - 真正的安全依赖：
+#   * RBAC权限控制（谁能访问Secret）
+#   * etcd加密（at rest encryption）
+#   * 传输加密（TLS）
+# 
+# 生产环境更好的方案：
+# - AWS Secrets Manager
+# - HashiCorp Vault
+# - External Secrets Operator（从外部密钥管理同步）
+
+# ============================================
+# 使用ConfigMap和Secret的完整示例
+# ============================================
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: example-with-config
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: example
+  template:
+    metadata:
+      labels:
+        app: example
+    spec:
+      containers:
+      - name: app
+        image: myapp:v1
+        
+        # 方式1：引用单个ConfigMap值
+        env:
+        - name: ENV
+          valueFrom:
+            configMapKeyRef:
+              name: mao-quotes-api-config
+              key: ENV
+        
+        # 方式2：引用单个Secret值
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: mao-quotes-api-secret
+              key: DB_PASSWORD
+        
+        # 方式3：引用所有ConfigMap值
+        envFrom:
+        - configMapRef:
+            name: mao-quotes-api-config
+        
+        # 方式4：挂载ConfigMap为文件
+        volumeMounts:
+        - name: config-volume
+          mountPath: /etc/config
+          readOnly: true
+        
+        # 方式5：挂载Secret为文件
+        - name: secret-volume
+          mountPath: /etc/secrets
+          readOnly: true
+      
+      volumes:
+      # ConfigMap卷
+      - name: config-volume
+        configMap:
+          name: mao-quotes-api-config
+          items:
+          - key: app.conf
+            path: app.conf
+      
+      # Secret卷
+      - name: secret-volume
+        secret:
+          secretName: mao-quotes-api-secret
+          defaultMode: 0400  # 只读权限（安全）
+
+# ============================================
+# 部署命令
+# ============================================
+# 创建ConfigMap：
+#   kubectl apply -f configmap.yaml
+#
+# 查看ConfigMap：
+#   kubectl get configmap
+#   kubectl describe configmap mao-quotes-api-config
+#   kubectl get configmap mao-quotes-api-config -o yaml
+#
+# 编辑ConfigMap：
+#   kubectl edit configmap mao-quotes-api-config
+#
+# 从文件创建ConfigMap：
+#   kubectl create configmap my-config --from-file=config.yaml
+#   kubectl create configmap my-config --from-literal=ENV=prod
+#
+# 创建Secret：
+#   kubectl create secret generic my-secret \
+#     --from-literal=password=mysecret \
+#     --from-file=ssh-key=/path/to/key
+#
+# 查看Secret（不会显示值）：
+#   kubectl get secret mao-quotes-api-secret
+#   kubectl describe secret mao-quotes-api-secret
+#
+# 解码Secret：
+#   kubectl get secret mao-quotes-api-secret -o jsonpath='{.data.DB_PASSWORD}' | base64 -d
+#
+# 在Pod中使用：
+#   kubectl exec -it pod-name -- env | grep ENV
+#   kubectl exec -it pod-name -- cat /etc/config/app.conf

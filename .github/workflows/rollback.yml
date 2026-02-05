@@ -1,0 +1,243 @@
+# ============================================================================
+# GitHub Actions Workflow - Rollback
+# ============================================================================
+# 用途：快速回滚到之前的版本
+# 触发：手动触发（紧急情况）
+# ============================================================================
+
+name: Rollback Deployment
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to rollback'
+        required: true
+        type: choice
+        options:
+          - dev
+          - staging
+          - prod
+      revision:
+        description: 'Revision number (0 = previous, 1 = before previous, etc.)'
+        required: false
+        default: '0'
+      reason:
+        description: 'Reason for rollback'
+        required: true
+
+env:
+  AWS_REGION: us-east-1
+  EKS_CLUSTER_NAME: mao-quotes-api-dev
+  DEPLOYMENT_NAME: mao-quotes-api
+
+jobs:
+  # 
+  # Job 1: 确认回滚
+  # 
+  confirm:
+    name: Confirm Rollback
+    runs-on: ubuntu-latest
+    environment:
+      name: ${{ github.event.inputs.environment }}
+    
+    steps:
+      - name: Display rollback info
+        run: |
+          echo "⚠️  ROLLBACK REQUEST ⚠️"
+          echo ""
+          echo "Environment: ${{ github.event.inputs.environment }}"
+          echo "Revision: ${{ github.event.inputs.revision }} (0 = previous version)"
+          echo "Reason: ${{ github.event.inputs.reason }}"
+          echo "Requested by: ${{ github.actor }}"
+          echo "Timestamp: $(date)"
+          echo ""
+      
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+      
+      - name: Configure kubectl
+        run: |
+          aws eks update-kubeconfig \
+            --region ${{ env.AWS_REGION }} \
+            --name ${{ env.EKS_CLUSTER_NAME }}
+      
+      # 显示当前部署状态
+      - name: Show current deployment
+        run: |
+          echo ""
+          echo "Current Deployment Status:"
+          echo ""
+          kubectl get deployment ${{ env.DEPLOYMENT_NAME }} -o wide
+          
+          echo ""
+          echo ""
+          echo "Rollout History:"
+          echo ""
+          kubectl rollout history deployment/${{ env.DEPLOYMENT_NAME }}
+  
+  # 
+  # Job 2: 执行回滚
+  # 
+  rollback:
+    name: Execute Rollback
+    runs-on: ubuntu-latest
+    needs: confirm
+    environment:
+      name: ${{ github.event.inputs.environment }}
+    
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+      
+      - name: Configure kubectl
+        run: |
+          aws eks update-kubeconfig \
+            --region ${{ env.AWS_REGION }} \
+            --name ${{ env.EKS_CLUSTER_NAME }}
+      
+      # 执行回滚
+      - name: Rollback deployment
+        run: |
+          if [ "${{ github.event.inputs.revision }}" == "0" ]; then
+            echo "Rolling back to previous version..."
+            kubectl rollout undo deployment/${{ env.DEPLOYMENT_NAME }}
+          else
+            echo "Rolling back to revision ${{ github.event.inputs.revision }}..."
+            kubectl rollout undo deployment/${{ env.DEPLOYMENT_NAME }} \
+              --to-revision=${{ github.event.inputs.revision }}
+          fi
+      
+      # 等待回滚完成
+      - name: Wait for rollback to complete
+        run: |
+          kubectl rollout status deployment/${{ env.DEPLOYMENT_NAME }} \
+            --timeout=5m
+      
+      # 验证回滚后的状态
+      - name: Verify rollback
+        run: |
+          echo ""
+          echo "Rollback Completed!"
+          echo ""
+          
+          # 显示Pod状态
+          kubectl get pods -l app=mao-api
+          
+          # 显示Deployment状态
+          kubectl get deployment ${{ env.DEPLOYMENT_NAME }} -o wide
+          
+          # 检查Pod健康状态
+          kubectl wait --for=condition=ready pod \
+            -l app=mao-api \
+            --timeout=2m
+      
+      # 运行健康检查
+      - name: Run health checks
+        run: |
+          LB_URL=$(kubectl get svc mao-quotes-service -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' || echo "")
+          
+          if [ -n "$LB_URL" ]; then
+            echo "Running health checks..."
+            sleep 30
+            
+            curl -f http://$LB_URL/health || {
+              echo "❌ Health check failed after rollback!"
+              exit 1
+            }
+            
+            curl -f http://$LB_URL/ready || {
+              echo "❌ Ready check failed after rollback!"
+              exit 1
+            }
+            
+            echo "✅ Health checks passed!"
+          fi
+      
+      # 记录回滚信息
+      - name: Log rollback
+        run: |
+          echo "" > rollback-log.txt
+          echo "ROLLBACK LOG" >> rollback-log.txt
+          echo "" >> rollback-log.txt
+          echo "Timestamp: $(date)" >> rollback-log.txt
+          echo "Environment: ${{ github.event.inputs.environment }}" >> rollback-log.txt
+          echo "Revision: ${{ github.event.inputs.revision }}" >> rollback-log.txt
+          echo "Reason: ${{ github.event.inputs.reason }}" >> rollback-log.txt
+          echo "Executed by: ${{ github.actor }}" >> rollback-log.txt
+          echo "" >> rollback-log.txt
+          kubectl describe deployment/${{ env.DEPLOYMENT_NAME }} >> rollback-log.txt
+      
+      - name: Upload rollback log
+        uses: actions/upload-artifact@v4
+        with:
+          name: rollback-log-${{ github.run_number }}
+          path: rollback-log.txt
+          retention-days: 90
+  
+  # 
+  # Job 3: 通知
+  # 
+  notify:
+    name: Send Notification
+    runs-on: ubuntu-latest
+    needs: rollback
+    if: always()
+    
+    steps:
+      - name: Send success notification
+        if: success()
+        run: |
+          echo "✅ ROLLBACK SUCCESSFUL"
+          echo "Environment: ${{ github.event.inputs.environment }}"
+          echo "Revision: ${{ github.event.inputs.revision }}"
+          echo "Reason: ${{ github.event.inputs.reason }}"
+          # 这里可以集成Slack/Email/PagerDuty等
+      
+      - name: Send failure notification
+        if: failure()
+        run: |
+          echo "❌ ROLLBACK FAILED"
+          echo "URGENT: Manual intervention required!"
+          echo "Environment: ${{ github.event.inputs.environment }}"
+          # 紧急通知on-call工程师
+
+# ============================================================================
+# 使用说明
+# ============================================================================
+# 
+# 1. 触发回滚：
+#    • 在GitHub Actions页面点击"Run workflow"
+#    • 选择环境（dev/staging/prod）
+#    • 输入revision（0=上一个版本，1=上上个版本）
+#    • 填写回滚原因
+# 
+# 2. Revision说明：
+#    • 0: 回滚到上一个版本（最常用）
+#    • 1: 回滚到上上个版本
+#    • 2: 回滚到更早的版本
+#    • 可以通过kubectl rollout history查看所有版本
+# 
+# 3. 查看Rollout历史：
+#    kubectl rollout history deployment/mao-quotes-api
+#    kubectl rollout history deployment/mao-quotes-api --revision=3
+# 
+# 4. 手动回滚（不使用GitHub Actions）：
+#    kubectl rollout undo deployment/mao-quotes-api
+#    kubectl rollout undo deployment/mao-quotes-api --to-revision=2
+# 
+# 5. 生产环境注意事项：
+#    • 回滚前通知团队
+#    • 记录回滚原因
+#    • 回滚后验证功能
+#    • 分析根本原因，避免再次发生
+# 
+# ============================================================================

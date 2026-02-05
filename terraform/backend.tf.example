@@ -1,0 +1,87 @@
+# ============================================================================
+# Terraform Remote Backend Configuration (示例文件)
+# ============================================================================
+# 用途：配置S3 + DynamoDB作为Remote Backend
+# 说明：这是一个示例文件，展示如何配置Remote Backend
+#      实际使用时需要先创建S3 Bucket和DynamoDB表，然后重命名为backend.tf
+# ============================================================================
+
+# ----------------------------------------------------------------------------
+# 方式1：直接在terraform块中配置（推荐用于生产环境）
+# ----------------------------------------------------------------------------
+terraform {
+  backend "s3" {
+    # S3 Bucket配置
+    bucket = "my-terraform-state-bucket-615299755285"  # 必须全局唯一
+    key    = "mao-quotes-api/terraform.tfstate"        # State文件在Bucket中的路径
+    region = "us-east-1"                                # Bucket所在区域
+    
+    # DynamoDB锁定配置
+    dynamodb_table = "terraform-state-lock"            # 锁定表名称
+    
+    # 加密配置
+    encrypt = true                                      # 启用服务器端加密
+    
+    # 可选：使用KMS加密（更安全）
+    # kms_key_id = "arn:aws:kms:us-east-1:615299755285:key/12345678-1234-1234-1234-123456789012"
+    
+    # 可选：访问控制
+    # acl = "private"  # 确保只有授权用户可以访问
+    
+    # 可选：版本控制（强烈推荐）
+    # versioning = true  # 注意：这需要在S3 Bucket上启用版本控制
+  }
+  
+  # 可选：Terraform版本约束
+  required_version = ">= 1.0"
+  
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 5.0"
+    }
+  }
+}
+
+# ============================================================================
+# 配置说明
+# ============================================================================
+# 
+# 1. bucket：S3 Bucket名称
+#    - 必须全局唯一（AWS账号 + 时间戳是个好方法）
+#    - 建议命名格式：<company>-terraform-state-<env>-<random>
+#    - 示例：acme-terraform-state-prod-615299755285
+#
+# 2. key：State文件路径
+#    - 支持目录结构：<project>/<env>/terraform.tfstate
+#    - 不同项目使用不同key，避免冲突
+#    - 示例：mao-quotes-api/dev/terraform.tfstate
+#
+# 3. region：S3 Bucket区域
+#    - 建议与资源同区域，减少延迟
+#    - 示例：us-east-1
+#
+# 4. dynamodb_table：DynamoDB锁定表
+#    - 表必须有主键：LockID (String类型)
+#    - 一个表可以支持多个项目
+#    - 建议命名：terraform-state-lock
+#
+# 5. encrypt：加密
+#    - true：使用SSE-S3加密（默认）
+#    - 推荐：使用KMS加密（更安全，可审计）
+#
+# ============================================================================
+# 前置准备：创建S3 Bucket和DynamoDB表
+# ============================================================================
+# 
+# 在使用Remote Backend之前，需要先创建这些资源。有两种方式：
+# 
+# 方式1：使用AWS Console手动创建（推荐新手）
+# 方式2：使用Terraform创建（bootstrap项目）
+# 
+# 下面展示方式2的代码（放在单独的bootstrap项目中）：
+# 
+# ============================================================================
+
+# 这些资源应该放在单独的bootstrap项目中，不要和主项目混在一起
+# 因为bootstrap项目本身使用local backend

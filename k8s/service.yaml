@@ -1,0 +1,152 @@
+# ============================================
+# Kubernetes Service配置
+# 用途：服务发现、负载均衡、稳定访问入口
+# ============================================
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: mao-quotes-service  # Service名称（DNS可解析）
+  labels:
+    app: mao-api
+spec:
+  # ============================================
+  # Service类型
+  # 面试高频：ClusterIP vs NodePort vs LoadBalancer
+  # ============================================
+  type: NodePort  # 开发环境用NodePort，可以从宿主机访问
+  
+  # 面试问题：Service有哪些类型？
+  # 答案：
+  # 
+  # 1. ClusterIP（默认）:
+  #    - 集群内部访问
+  #    - 分配一个集群内部IP
+  #    - 访问：http://service-name.namespace.svc.cluster.local
+  #    - 适用：微服务间调用
+  # 
+  # 2. NodePort:
+  #    - 在每个节点上开放端口（30000-32767）
+  #    - 可以从集群外访问
+  #    - 访问：http://<节点IP>:<NodePort>
+  #    - 适用：开发测试
+  # 
+  # 3. LoadBalancer:
+  #    - 云厂商提供的负载均衡器
+  #    - 自动分配公网IP
+  #    - 适用：生产环境（AWS ALB/NLB，GCP LB）
+  # 
+  # 4. ExternalName:
+  #    - 返回CNAME记录
+  #    - 用于访问集群外服务
+  
+  # ============================================
+  # 选择器 - 选择哪些Pod
+  # ============================================
+  selector:
+    app: mao-api  # 选择带有app=mao-api标签的Pod
+  
+  # 面试问题：Service如何找到Pod？
+  # 答案：
+  # 1. Service通过selector选择Pod
+  # 2. 匹配Pod的labels
+  # 3. 动态维护Endpoints列表
+  # 4. Pod创建/删除时自动更新
+  
+  # ============================================
+  # 端口配置
+  # ============================================
+  ports:
+  - name: http          # 端口名称
+    protocol: TCP       # 协议
+    port: 80            # Service端口（集群内访问）
+    targetPort: 8000    # Pod端口（容器监听的端口）
+    nodePort: 30080     # 节点端口（可选，不指定自动分配30000-32767）
+  
+  # 面试问题：port vs targetPort vs nodePort？
+  # 答案：
+  # 
+  # port: 80
+  #   - Service暴露的端口
+  #   - 集群内访问：http://mao-quotes-service:80
+  # 
+  # targetPort: 8000
+  #   - Pod的端口
+  #   - 必须与容器实际监听的端口一致
+  #   - 可以是端口号或端口名称（如http）
+  # 
+  # nodePort: 30080
+  #   - 节点上的端口
+  #   - 外部访问：http://localhost:30080
+  #   - 范围：30000-32767
+  # 
+  # 流量路径：
+  # 外部 → NodePort:30080 → Service:80 → Pod:8000
+
+  # ============================================
+  # 会话亲和性（Session Affinity）
+  # ============================================
+  sessionAffinity: None  # 默认：None（随机/轮询）
+  # sessionAffinity: ClientIP  # 基于客户端IP的会话保持
+  
+  # 面试问题：什么时候需要sessionAffinity？
+  # 答案：
+  # - 有状态应用（用户Session存储在内存）
+  # - WebSocket长连接
+  # - 文件上传（多次请求需要到同一Pod）
+  # 
+  # 但更好的方案：
+  # - 使用Redis存储Session（无状态化）
+  # - 使用Sticky Session（Ingress级别）
+
+# ============================================
+# 面试知识点：Service工作原理
+# ============================================
+#
+# 1. Service创建时，K8s做什么？
+#    a. 分配ClusterIP（虚拟IP）
+#    b. 创建Endpoints对象（Pod IP列表）
+#    c. 更新iptables/IPVS规则（负载均衡）
+#    d. 更新CoreDNS（DNS解析）
+#
+# 2. 负载均衡算法
+#    - kube-proxy模式：
+#      * iptables模式：随机选择（性能好）
+#      * IPVS模式：支持多种算法（rr/lc/sh等）
+#
+# 3. Service发现
+#    - DNS方式：http://service-name.namespace.svc.cluster.local
+#    - 环境变量：MAO_QUOTES_SERVICE_HOST=10.96.0.1
+#
+# 4. Endpoints
+#    - 动态维护：Pod就绪→加入，Pod删除→移除
+#    - 健康检查：readinessProbe失败→从Endpoints移除
+#
+# 5. 与Docker对比
+#    docker run -p 8000:8000  ← 端口映射
+#    ↓
+#    Service + Endpoints ← 负载均衡到多个Pod
+
+# ============================================
+# 部署命令
+# ============================================
+# 创建/更新：
+#   kubectl apply -f service.yaml
+#
+# 查看：
+#   kubectl get services
+#   kubectl get svc mao-quotes-service
+#   kubectl describe service mao-quotes-service
+#
+# 查看Endpoints：
+#   kubectl get endpoints mao-quotes-service
+#
+# 测试访问：
+#   # 集群内：
+#   kubectl run tmp --rm -it --image=busybox -- wget -qO- http://mao-quotes-service
+#   
+#   # 集群外（NodePort）：
+#   curl http://localhost:30080/health
+#
+# DNS解析测试：
+#   kubectl run tmp --rm -it --image=busybox -- nslookup mao-quotes-service

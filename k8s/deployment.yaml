@@ -1,0 +1,295 @@
+# ============================================
+# Kubernetes Deployment配置
+# 用途：声明式管理Pod副本、健康检查、资源限制
+# ============================================
+
+apiVersion: apps/v1  # API版本（Deployment属于apps API组）
+kind: Deployment     # 资源类型
+metadata:
+  name: mao-quotes-api  # Deployment名称（集群内唯一）
+  labels:
+    app: mao-api       # 标签（用于选择器）
+    version: v1
+    tier: backend
+spec:
+  # ============================================
+  # 副本数量
+  # ============================================
+  replicas: 3  # 期望运行3个Pod副本
+  
+  # 面试问题：为什么是3个副本？
+  # 答案：
+  # 1. 高可用：至少2个副本（1个挂了还有1个）
+  # 2. 负载均衡：3个可以更好地分散流量
+  # 3. 滚动更新：更新时可以保证至少2个在运行
+  # 4. 奇数个：方便选主（如果需要）
+  
+  # ============================================
+  # 选择器 - 如何找到要管理的Pod
+  # ============================================
+  selector:
+    matchLabels:
+      app: mao-api  # 管理带有app=mao-api标签的Pod
+  
+  # ============================================
+  # 更新策略
+  # 面试高频：滚动更新（Rolling Update）原理
+  # ============================================
+  strategy:
+    type: RollingUpdate  # 滚动更新（默认，最常用）
+    rollingUpdate:
+      maxSurge: 1        # 更新时最多多创建1个Pod（总共4个）
+      maxUnavailable: 1  # 更新时最多1个Pod不可用（最少2个）
+  
+  # 面试问题：滚动更新过程是什么？
+  # 答案：
+  # 假设当前3个Pod（v1版本），要更新到v2：
+  # 1. 创建1个v2 Pod（总共4个：3个v1 + 1个v2）[maxSurge=1]
+  # 2. 等v2 Pod就绪（readinessProbe通过）
+  # 3. 删除1个v1 Pod（总共3个：2个v1 + 1个v2）
+  # 4. 创建1个v2 Pod（总共4个：2个v1 + 2个v2）
+  # 5. 重复，直到全部是v2
+  # 
+  # 优势：
+  # - 零停机：始终有Pod在运行
+  # - 可以回滚：发现问题立即回滚
+  # - 金丝雀：可以先更新1个验证
+  
+  # ============================================
+  # Pod模板 - 定义Pod的样子
+  # ============================================
+  template:
+    metadata:
+      labels:
+        app: mao-api      # 必须与selector.matchLabels一致
+        version: v1
+    spec:
+      # ============================================
+      # 容器定义
+      # ============================================
+      containers:
+      - name: api  # 容器名称（Pod内唯一）
+        image: mao-quotes-api:v1  # 使用我们构建的镜像
+        imagePullPolicy: IfNotPresent  # 如果本地有就不拉取
+        
+        # 面试问题：imagePullPolicy有哪些选项？
+        # 答案：
+        # - Always: 总是拉取（生产环境推荐，确保最新）
+        # - IfNotPresent: 本地有就不拉（开发环境，节省时间）
+        # - Never: 永不拉取（必须本地有）
+        
+        # ============================================
+        # 端口声明
+        # ============================================
+        ports:
+        - name: http      # 端口名称（可被Service引用）
+          containerPort: 8000  # 容器监听的端口
+          protocol: TCP
+        
+        # ============================================
+        # 环境变量
+        # ============================================
+        env:
+        - name: ENV
+          value: "production"
+        - name: LOG_LEVEL
+          value: "info"
+        - name: WORKERS
+          value: "1"  # 单容器单进程（12-factor app）
+        
+        # 面试问题：为什么WORKERS=1？
+        # 答案：
+        # 1. 单容器单进程原则（12-factor app）
+        # 2. 水平扩展：需要更多并发就增加replicas
+        # 3. 资源隔离：每个进程有明确的资源限制
+        # 4. 故障隔离：一个进程挂了不影响其他Pod
+        
+        # ============================================
+        # 资源限制（⭐⭐⭐ 生产环境必须设置）
+        # ============================================
+        resources:
+          requests:    # 调度时保证的资源
+            memory: "256Mi"  # 256MB内存
+            cpu: "250m"      # 0.25核CPU（25%）
+          limits:      # 最大可使用的资源
+            memory: "512Mi"  # 512MB内存（超过OOM Kill）
+            cpu: "500m"      # 0.5核CPU（超过会被限流throttled）
+        
+        # 面试问题：如何设置合理的资源限制？
+        # 答案：
+        # 1. 压力测试：用ab/locust测试实际使用量
+        # 2. 观察监控：运行一段时间看实际使用
+        # 3. requests = P95使用量（保证日常运行）
+        # 4. limits = requests * 1.5-2倍（应对峰值）
+        # 5. 生产环境经验：FastAPI应用通常256Mi起步
+        #
+        # 我们的设置：
+        # - requests: 256Mi/250m（正常使用）
+        # - limits: 512Mi/500m（峰值流量）
+        
+        # ============================================
+        # 存活探针（Liveness Probe）
+        # 检测：容器是否还活着？
+        # 失败后果：重启Pod
+        # ============================================
+        livenessProbe:
+          httpGet:
+            path: /health    # 调用我们的健康检查端点
+            port: 8000       # 端口
+            scheme: HTTP     # 协议
+          initialDelaySeconds: 15  # 启动后15秒才开始检查
+          periodSeconds: 10        # 每10秒检查一次
+          timeoutSeconds: 3        # 超时时间3秒
+          successThreshold: 1      # 成功1次就认为健康
+          failureThreshold: 3      # 连续失败3次才认为不健康
+        
+        # 面试问题：initialDelaySeconds如何设置？
+        # 答案：
+        # 设置为应用启动时间 + buffer
+        # - FastAPI启动快（5秒），设置15秒（留10秒buffer）
+        # - Java Spring应用慢（30-60秒），设置90秒
+        # - 设置太短：应用还没启动就被认为失败，反复重启
+        # - 设置太长：故障Pod长时间不被重启
+        
+        # ============================================
+        # 就绪探针（Readiness Probe）
+        # 检测：容器是否准备好接收流量？
+        # 失败后果：从Service中移除，不接收流量
+        # ============================================
+        readinessProbe:
+          httpGet:
+            path: /ready     # 调用就绪检查端点
+            port: 8000
+            scheme: HTTP
+          initialDelaySeconds: 10   # 启动后10秒开始检查
+          periodSeconds: 5          # 每5秒检查一次
+          timeoutSeconds: 2         # 超时2秒
+          successThreshold: 1       # 成功1次就认为就绪
+          failureThreshold: 2       # 连续失败2次认为未就绪
+        
+        # 面试问题：Liveness vs Readiness的区别？（⭐⭐⭐）
+        # 答案：
+        # 
+        # Liveness（存活探针）：
+        # - 目的：检测死锁、死循环、僵尸进程
+        # - 失败：重启Pod
+        # - 场景：进程卡住、内存泄漏导致无响应
+        # - 示例：/health返回200（进程活着）
+        # 
+        # Readiness（就绪探针）：
+        # - 目的：检测是否准备好处理请求
+        # - 失败：从Service移除（不重启）
+        # - 场景：依赖服务不可用、缓存预热中
+        # - 示例：/ready检查数据库连接
+        # 
+        # 实际案例：
+        # 数据库连接断了：
+        # - Liveness: PASS（进程还活着）
+        # - Readiness: FAIL（不能处理请求）
+        # → Pod不重启，但暂时不接收流量
+        # → 数据库恢复后，自动恢复
+        
+        # ============================================
+        # 启动探针（Startup Probe）- K8s 1.16+
+        # 用于慢启动应用
+        # ============================================
+        # startupProbe:
+        #   httpGet:
+        #     path: /health
+        #     port: 8000
+        #   initialDelaySeconds: 0
+        #   periodSeconds: 5
+        #   failureThreshold: 30  # 30次*5秒=150秒启动时间
+        #   # 启动探针成功后，才开始liveness和readiness
+        
+        # 面试问题：什么时候用startupProbe？
+        # 答案：
+        # - Java应用启动慢（60秒+）
+        # - 需要加载大量数据（机器学习模型）
+        # - 避免liveness的initialDelaySeconds设置太长
+      
+      # ============================================
+      # 优雅终止
+      # ============================================
+      terminationGracePeriodSeconds: 30  # 收到SIGTERM后30秒再SIGKILL
+      
+      # 面试问题：优雅终止的流程是什么？
+      # 答案：
+      # 1. K8s向Pod发送SIGTERM信号
+      # 2. 同时将Pod从Service的Endpoints移除（不再转发流量）
+      # 3. 应用收到SIGTERM，完成当前请求，不接受新请求
+      # 4. 等待terminationGracePeriodSeconds（30秒）
+      # 5. 如果还没退出，发送SIGKILL强制杀死
+      # 
+      # 我们在Phase 1实现的graceful_shutdown就是处理SIGTERM
+      
+      # ============================================
+      # 安全上下文（Security Context）
+      # ============================================
+      securityContext:
+        runAsNonRoot: true   # 强制非root运行
+        runAsUser: 1000      # UID 1000（与Dockerfile一致）
+        fsGroup: 1000        # 文件系统组
+        seccompProfile:
+          type: RuntimeDefault  # 使用默认seccomp配置
+      
+      # 面试问题：为什么要设置securityContext？
+      # 答案：
+      # 1. 最小权限原则：不给root权限
+      # 2. 合规要求：很多企业安全策略要求非root
+      # 3. Pod Security Standards（K8s安全标准）
+      # 4. 防止容器逃逸后获得宿主机root权限
+
+# ============================================
+# 面试高频知识点总结
+# ============================================
+#
+# 1. Deployment vs ReplicaSet vs Pod
+#    Pod: 最小单元（1个或多个容器）
+#    ReplicaSet: 维护Pod副本数（不直接使用）
+#    Deployment: 管理ReplicaSet，提供滚动更新、回滚
+#
+# 2. 滚动更新策略
+#    - RollingUpdate: 逐步替换（零停机）
+#    - Recreate: 先删后建（有停机）
+#
+# 3. 健康检查三剑客
+#    - startupProbe: 启动检查
+#    - livenessProbe: 存活检查（重启）
+#    - readinessProbe: 就绪检查（摘流量）
+#
+# 4. 资源管理
+#    - requests: 保证资源（调度依据）
+#    - limits: 最大资源（防止资源耗尽）
+#    - QoS等级：Guaranteed/Burstable/BestEffort
+#
+# 5. 与Docker对比
+#    docker run -d -p 8000:8000 -m 512m --restart always myapp
+#    ↓
+#    Deployment: 声明式、自愈、滚动更新、资源管理
+
+# ============================================
+# 部署命令
+# ============================================
+# 创建/更新：
+#   kubectl apply -f deployment.yaml
+#
+# 查看：
+#   kubectl get deployments
+#   kubectl get pods
+#   kubectl describe deployment mao-quotes-api
+#
+# 查看日志：
+#   kubectl logs -f deployment/mao-quotes-api
+#
+# 扩缩容：
+#   kubectl scale deployment mao-quotes-api --replicas=5
+#
+# 更新镜像：
+#   kubectl set image deployment/mao-quotes-api api=mao-quotes-api:v2
+#
+# 回滚：
+#   kubectl rollout undo deployment/mao-quotes-api
+#
+# 查看更新状态：
+#   kubectl rollout status deployment/mao-quotes-api

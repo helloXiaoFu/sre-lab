@@ -1,0 +1,210 @@
+# ============================================
+# Kubernetes HPA (Horizontal Pod Autoscaler) 配置
+# 用途：根据CPU/内存使用率自动扩缩容
+# ============================================
+
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: mao-quotes-api-hpa
+  labels:
+    app: mao-api
+spec:
+  # ============================================
+  # 扩缩容目标
+  # ============================================
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: mao-quotes-api  # 要管理的Deployment
+  
+  # ============================================
+  # 副本数量范围
+  # ============================================
+  minReplicas: 2   # 最少2个（高可用）
+  maxReplicas: 10  # 最多10个（防止无限扩容）
+  
+  # 面试问题：如何设置min和max？
+  # 答案：
+  # minReplicas:
+  # - 至少2个（单点故障）
+  # - 考虑日常负载（不要设置太小，冷启动慢）
+  # - 成本平衡
+  # 
+  # maxReplicas:
+  # - 考虑节点资源（不能超过节点承载能力）
+  # - 考虑下游服务承载（数据库连接数）
+  # - 考虑成本上限
+  # - 留20%余量应对突发流量
+  
+  # ============================================
+  # 扩缩容指标
+  # ============================================
+  metrics:
+  
+  # 指标1：CPU使用率
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70  # 目标：70% CPU使用率
+  
+  # 面试问题：为什么是70%而不是80%或90%？
+  # 答案：
+  # - 50%-70%：最佳实践范围
+  # - 留30%余量应对突发流量
+  # - 太低（30%）：浪费资源
+  # - 太高（90%）：扩容不及时，可能超载
+  # 
+  # Google SRE建议：
+  # - CPU: 60-70%
+  # - 内存: 70-80%（内存不能超卖）
+  
+  # 指标2：内存使用率
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80  # 目标：80% 内存使用率
+  
+  # 面试问题：为什么内存设置80%，比CPU高？
+  # 答案：
+  # - CPU可以限流（throttle），不会导致崩溃
+  # - 内存超限会OOM Kill，更危险
+  # - 但内存增长通常更平滑，可以设置高一点
+  # - 实际应该监控P99内存使用，设置合理限制
+  
+  # ============================================
+  # 扩缩容行为（K8s 1.23+）
+  # ============================================
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 60  # 扩容前观察60秒（避免抖动）
+      policies:
+      - type: Percent
+        value: 100      # 每次最多增加100%（翻倍）
+        periodSeconds: 60
+      - type: Pods
+        value: 2        # 或每次最多增加2个Pod
+        periodSeconds: 60
+      selectPolicy: Max  # 选择增加最多的策略
+    
+    scaleDown:
+      stabilizationWindowSeconds: 300  # 缩容前观察300秒（避免频繁缩容）
+      policies:
+      - type: Percent
+        value: 50       # 每次最多减少50%
+        periodSeconds: 60
+      - type: Pods
+        value: 1        # 或每次最多减少1个Pod
+        periodSeconds: 60
+      selectPolicy: Min  # 选择减少最少的策略（保守缩容）
+  
+  # 面试问题：为什么扩容快，缩容慢？
+  # 答案：
+  # 扩容（快）:
+  # - 负载高影响用户体验
+  # - 宁可多花点钱
+  # - 60秒观察窗口
+  # 
+  # 缩容（慢）:
+  # - 避免频繁波动（"抖动"）
+  # - 节省资源不那么紧急
+  # - 300秒观察窗口
+  # - 防止缩容后立即扩容（浪费）
+  # 
+  # 实际案例：
+  # 流量高峰：60秒内从2个→4个Pod
+  # 高峰过后：5分钟观察，缓慢缩回2个
+
+# ============================================
+# 面试高频知识点
+# ============================================
+#
+# 1. HPA工作原理
+#    - 每15秒（默认）查询metrics-server
+#    - 计算当前指标值
+#    - 公式：期望副本数 = ceil(当前副本数 * (当前指标值 / 目标指标值))
+#    - 例：当前3个Pod，CPU使用140%，目标70%
+#         期望 = ceil(3 * (140/70)) = ceil(6) = 6个Pod
+#
+# 2. HPA vs VPA (Vertical Pod Autoscaler)
+#    HPA：增加Pod数量（水平扩展）
+#    VPA：增加Pod资源（垂直扩展，调整CPU/内存）
+#    推荐：优先使用HPA（更灵活）
+#
+# 3. HPA的前提条件
+#    ✅ Deployment必须设置resources.requests
+#    ✅ 安装metrics-server（监控组件）
+#    ❌ 不能与手动修改replicas同时使用
+#
+# 4. 常见问题
+#    问题1：HPA不工作
+#    - 检查metrics-server是否运行
+#    - kubectl top nodes/pods 是否有数据
+#    
+#    问题2：频繁扩缩容（抖动）
+#    - 增加stabilizationWindowSeconds
+#    - 调整目标值（不要设置太紧）
+#
+# 5. 生产环境最佳实践
+#    - 使用多个指标（CPU + 内存 + 自定义指标）
+#    - 设置合理的min/max（防止无限扩容）
+#    - 扩容快，缩容慢（behavior配置）
+#    - 监控HPA事件（kubectl describe hpa）
+#    - 压力测试验证扩容速度
+
+# ============================================
+# 自定义指标（高级）
+# ============================================
+# 除了CPU/内存，还可以基于自定义指标扩缩容：
+# 
+# - type: Pods
+#   pods:
+#     metric:
+#       name: http_requests_per_second
+#     target:
+#       type: AverageValue
+#       averageValue: "1000"  # 每个Pod 1000 QPS
+#
+# - type: External
+#   external:
+#     metric:
+#       name: sqs_queue_length  # AWS SQS队列长度
+#     target:
+#       type: Value
+#       value: "30"  # 队列长度超过30就扩容
+#
+# 需要：
+# - Prometheus Adapter（提供自定义指标）
+# - CloudWatch Adapter（AWS指标）
+
+# ============================================
+# 部署命令
+# ============================================
+# 注意：HPA需要metrics-server支持
+# Docker Desktop默认已安装，但需要验证
+#
+# 验证metrics-server：
+#   kubectl get deployment metrics-server -n kube-system
+#   kubectl top nodes
+#   kubectl top pods
+#
+# 如果没有，安装：
+#   kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
+#
+# 创建HPA：
+#   kubectl apply -f hpa.yaml
+#
+# 查看HPA状态：
+#   kubectl get hpa
+#   kubectl describe hpa mao-quotes-api-hpa
+#
+# 测试自动扩容（压力测试）：
+#   kubectl run -it --rm load-generator --image=busybox -- /bin/sh
+#   while true; do wget -q -O- http://mao-quotes-service; done
+#
+# 观察扩容过程：
+#   watch kubectl get hpa,pods

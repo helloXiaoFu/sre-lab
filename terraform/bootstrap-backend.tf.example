@@ -1,0 +1,247 @@
+# ============================================================================
+# Bootstrap项目：创建Remote Backend所需的S3和DynamoDB
+# ============================================================================
+# 用途：创建Terraform Remote Backend所需的基础设施
+# 说明：这个文件应该放在单独的bootstrap目录中
+#      bootstrap项目使用local backend，一次性创建S3和DynamoDB
+#      创建完成后，主项目就可以使用remote backend了
+# ============================================================================
+
+# ----------------------------------------------------------------------------
+# Provider配置
+# ----------------------------------------------------------------------------
+terraform {
+  # 注意：bootstrap项目使用local backend
+  # 因为我们还没有S3 Bucket可以存储State
+  required_version = ">= 1.0"
+  
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 5.0"
+    }
+  }
+}
+
+provider "aws" {
+  region = var.aws_region
+}
+
+# ----------------------------------------------------------------------------
+# Variables
+# ----------------------------------------------------------------------------
+variable "aws_region" {
+  description = "AWS region"
+  type        = string
+  default     = "us-east-1"
+}
+
+variable "project_name" {
+  description = "Project name for naming resources"
+  type        = string
+  default     = "mao-quotes-api"
+}
+
+variable "aws_account_id" {
+  description = "AWS account ID"
+  type        = string
+  # 从环境变量获取或通过data source自动获取
+}
+
+# 自动获取AWS账号ID
+data "aws_caller_identity" "current" {}
+
+locals {
+  account_id = coalesce(var.aws_account_id, data.aws_caller_identity.current.account_id)
+}
+
+# ----------------------------------------------------------------------------
+# S3 Bucket：存储Terraform State文件
+# ----------------------------------------------------------------------------
+resource "aws_s3_bucket" "terraform_state" {
+  # Bucket名称（必须全局唯一）
+  bucket = "${var.project_name}-terraform-state-${local.account_id}"
+  
+  # 防止误删除（生产环境强烈推荐）
+  # lifecycle {
+  #   prevent_destroy = true
+  # }
+  
+  tags = {
+    Name        = "${var.project_name}-terraform-state"
+    Purpose     = "Terraform Remote State Storage"
+    Environment = "shared"
+    ManagedBy   = "terraform-bootstrap"
+  }
+}
+
+# S3 Bucket版本控制（强烈推荐）
+resource "aws_s3_bucket_versioning" "terraform_state" {
+  bucket = aws_s3_bucket.terraform_state.id
+  
+  versioning_configuration {
+    status = "Enabled"  # 启用版本控制
+  }
+}
+
+# S3 Bucket加密（强烈推荐）
+resource "aws_s3_bucket_server_side_encryption_configuration" "terraform_state" {
+  bucket = aws_s3_bucket.terraform_state.id
+  
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256"  # 使用S3默认加密
+      # 或使用KMS加密（更安全）：
+      # sse_algorithm     = "aws:kms"
+      # kms_master_key_id = aws_kms_key.terraform.arn
+    }
+  }
+}
+
+# S3 Bucket公共访问阻止（安全最佳实践）
+resource "aws_s3_bucket_public_access_block" "terraform_state" {
+  bucket = aws_s3_bucket.terraform_state.id
+  
+  block_public_acls       = true  # 阻止公共ACL
+  block_public_policy     = true  # 阻止公共Bucket策略
+  ignore_public_acls      = true  # 忽略公共ACL
+  restrict_public_buckets = true  # 限制公共Bucket
+}
+
+# 可选：S3 Bucket生命周期策略（删除旧版本）
+resource "aws_s3_bucket_lifecycle_configuration" "terraform_state" {
+  bucket = aws_s3_bucket.terraform_state.id
+  
+  rule {
+    id     = "delete-old-versions"
+    status = "Enabled"
+    
+    # 保留最近90天的非当前版本
+    noncurrent_version_expiration {
+      noncurrent_days = 90
+    }
+  }
+}
+
+# ----------------------------------------------------------------------------
+# DynamoDB表：State锁定
+# ----------------------------------------------------------------------------
+resource "aws_dynamodb_table" "terraform_locks" {
+  name         = "${var.project_name}-terraform-state-lock"
+  billing_mode = "PAY_PER_REQUEST"  # 按需付费（成本更低）
+  hash_key     = "LockID"            # 主键（必须是LockID）
+  
+  # 属性定义
+  attribute {
+    name = "LockID"
+    type = "S"  # String类型
+  }
+  
+  # 防止误删除（生产环境强烈推荐）
+  # lifecycle {
+  #   prevent_destroy = true
+  # }
+  
+  # Point-in-time Recovery（可选）
+  point_in_time_recovery {
+    enabled = true  # 启用自动备份
+  }
+  
+  # 服务器端加密
+  server_side_encryption {
+    enabled = true  # 启用加密
+  }
+  
+  tags = {
+    Name        = "${var.project_name}-terraform-state-lock"
+    Purpose     = "Terraform State Locking"
+    Environment = "shared"
+    ManagedBy   = "terraform-bootstrap"
+  }
+}
+
+# ----------------------------------------------------------------------------
+# Outputs
+# ----------------------------------------------------------------------------
+output "s3_bucket_name" {
+  description = "Name of the S3 bucket for Terraform state"
+  value       = aws_s3_bucket.terraform_state.id
+}
+
+output "s3_bucket_arn" {
+  description = "ARN of the S3 bucket"
+  value       = aws_s3_bucket.terraform_state.arn
+}
+
+output "dynamodb_table_name" {
+  description = "Name of the DynamoDB table for state locking"
+  value       = aws_dynamodb_table.terraform_locks.name
+}
+
+output "dynamodb_table_arn" {
+  description = "ARN of the DynamoDB table"
+  value       = aws_dynamodb_table.terraform_locks.arn
+}
+
+output "backend_config" {
+  description = "Backend configuration to use in your main project"
+  value = <<-EOT
+    
+    # 将以下配置添加到你的主项目的terraform块中：
+    
+    terraform {
+      backend "s3" {
+        bucket         = "${aws_s3_bucket.terraform_state.id}"
+        key            = "terraform.tfstate"
+        region         = "${var.aws_region}"
+        dynamodb_table = "${aws_dynamodb_table.terraform_locks.name}"
+        encrypt        = true
+      }
+    }
+  EOT
+}
+
+# ============================================================================
+# 使用说明
+# ============================================================================
+# 
+# 1. 创建bootstrap目录：
+#    mkdir terraform-bootstrap
+#    cd terraform-bootstrap
+# 
+# 2. 将此文件保存为main.tf
+# 
+# 3. 初始化并创建资源：
+#    terraform init
+#    terraform plan
+#    terraform apply
+# 
+# 4. 记录输出的backend_config
+# 
+# 5. 在主项目中配置backend（使用输出的配置）
+# 
+# 6. 重新初始化主项目：
+#    cd ../main-project
+#    terraform init -migrate-state  # 迁移现有State到S3
+# 
+# 7. 验证：
+#    aws s3 ls s3://bucket-name/
+#    aws dynamodb scan --table-name table-name
+# 
+# ============================================================================
+# 成本估算
+# ============================================================================
+# 
+# S3：
+#   - 存储：$0.023/GB/月（标准存储）
+#   - State文件通常<1MB，几乎免费
+#   - 请求：PUT/GET每1000次约$0.005
+# 
+# DynamoDB：
+#   - PAY_PER_REQUEST模式
+#   - 读写请求：$0.25/百万次
+#   - 锁定操作很少，成本<$0.01/月
+# 
+# 总计：约$0.05-0.10/月（几乎可以忽略）
+# 
+# ============================================================================

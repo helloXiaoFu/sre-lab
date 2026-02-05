@@ -1,0 +1,63 @@
+# ============================================================================
+# Terraform .gitignore
+# ============================================================================
+
+# Local .terraform directories
+**/.terraform/*
+
+# .tfstate files (State文件包含敏感信息，不应提交到Git)
+*.tfstate
+*.tfstate.*
+
+# Crash log files
+crash.log
+crash.*.log
+
+# Exclude all .tfvars files (可能包含敏感变量)
+*.tfvars
+*.tfvars.json
+
+# 但是保留示例配置文件
+!example.tfvars
+!*.example.tfvars
+
+# Ignore override files
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# CLI configuration files
+.terraformrc
+terraform.rc
+
+# Lock file for provider selections
+# 推荐提交.terraform.lock.hcl以确保团队使用相同的provider版本
+# 如果不想提交，可以取消下面的注释
+# .terraform.lock.hcl
+
+# ============================================================================
+# 为什么这些文件不应该提交到Git？
+# ============================================================================
+#
+# 1. .terraform目录：
+#    - 包含下载的provider插件
+#    - 体积大（几百MB）
+#    - 可以通过 terraform init 重新生成
+#
+# 2. *.tfstate文件：
+#    - 包含基础设施的完整状态
+#    - 包含敏感信息（密码、密钥、IP地址等）
+#    - 应该使用Remote Backend存储在S3/Terraform Cloud
+#
+# 3. *.tfvars文件：
+#    - 可能包含敏感变量（密码、API密钥等）
+#    - 每个环境/开发者可能有不同的配置
+#    - 可以提交*.example.tfvars作为模板
+#
+# 4. .terraform.lock.hcl：
+#    - 锁定provider版本
+#    - 推荐提交（确保团队一致性）
+#    - 类似于package-lock.json或Gemfile.lock
+#
+# ============================================================================

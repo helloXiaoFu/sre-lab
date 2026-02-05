@@ -1,0 +1,143 @@
+# ============================================
+# Python依赖清单
+# SRE最佳实践：锁定版本号，确保环境一致性
+# ============================================
+
+# 为什么要锁定版本号？
+# - 避免"在我机器上能跑"的问题
+# - 确保开发、测试、生产环境完全一致
+# - 防止依赖更新导致的意外bug
+# 生产环境建议使用 pip freeze > requirements.txt 或 poetry
+
+# ============================================
+# Web框架 - FastAPI生态
+# ============================================
+
+# FastAPI：现代Python Web框架
+# 为什么选FastAPI而不是Flask/Django？
+# ✓ 原生支持异步（async/await）- 高性能
+# ✓ 自动生成API文档（Swagger UI）
+# ✓ 自动数据验证（Pydantic）
+# ✓ 类型提示支持 - 更好的IDE体验
+fastapi==0.109.0
+
+# Uvicorn：ASGI服务器
+# 什么是ASGI？异步网关接口（类似WSGI但支持异步）
+# [standard]包含所有推荐依赖（如websockets支持）
+uvicorn[standard]==0.27.0
+
+# Pydantic：数据验证和序列化
+# FastAPI底层使用Pydantic做请求/响应验证
+pydantic==2.5.3
+
+# ============================================
+# AWS SDK（Phase 4会用到）
+# ============================================
+
+# boto3：AWS的Python SDK
+# 用途：与AWS服务交互（S3、DynamoDB、CloudWatch等）
+# 面试高频：boto3的核心概念是什么？
+# 答：client（低级API）vs resource（高级API）
+boto3==1.34.23
+
+# botocore：boto3的底层库（自动安装，但锁定版本保证兼容）
+botocore==1.34.23
+
+# ============================================
+# HTTP客户端（测试用）
+# ============================================
+
+# httpx：现代异步HTTP客户端
+# 为什么不用requests？httpx支持async，适合FastAPI测试
+httpx==0.26.0
+
+# requests：经典同步HTTP客户端
+# 某些场景（如简单脚本）仍然很有用
+requests==2.31.0
+
+# ============================================
+# 工具库
+# ============================================
+
+# python-multipart：表单数据解析
+# FastAPI处理 multipart/form-data 需要
+python-multipart==0.0.6
+
+# ============================================
+# 监控与日志（Phase 5会用到，现在注释掉）
+# ============================================
+
+# 结构化日志：JSON格式日志，便于日志聚合系统解析
+# python-json-logger==2.0.7
+
+# Prometheus metrics：暴露指标给Prometheus抓取
+# prometheus-client==0.19.0
+
+# OpenTelemetry：分布式追踪（Traces）
+# opentelemetry-api==1.22.0
+# opentelemetry-sdk==1.22.0
+# opentelemetry-instrumentation-fastapi==0.43b0
+
+# ============================================
+# 开发工具（生产环境不需要）
+# ============================================
+
+# pytest：单元测试框架
+# pytest==7.4.4
+# pytest-asyncio==0.23.3  # 支持异步测试
+
+# black：代码格式化
+# black==24.1.1
+
+# mypy：静态类型检查
+# mypy==1.8.0
+
+# ============================================
+# 依赖管理最佳实践
+# ============================================
+# 
+# 开发环境：
+#   pip install -r requirements.txt
+#
+# 生产环境：
+#   1. 使用虚拟环境：python -m venv venv
+#   2. 激活虚拟环境：source venv/bin/activate (Linux/Mac)
+#   3. 安装依赖：pip install --no-cache-dir -r requirements.txt
+#   4. 验证：pip list
+#
+# Docker环境（Phase 2会讲）：
+#   COPY requirements.txt .
+#   RUN pip install --no-cache-dir -r requirements.txt
+#
+# 依赖升级策略：
+#   - 补丁版本（0.0.X）：可以自动升级（bug修复）
+#   - 次版本（0.X.0）：需要测试后升级（新特性）
+#   - 主版本（X.0.0）：谨慎升级（可能有breaking changes）
+#
+# 安全扫描（SRE必备）：
+#   pip install safety
+#   safety check  # 检查已知安全漏洞
+#
+# ============================================
+# 面试高频问题
+# ============================================
+#
+# Q1: requirements.txt vs Pipfile vs poetry.lock 的区别？
+# A: 
+#   - requirements.txt：最基础，广泛支持
+#   - Pipfile：Pipenv工具，区分dev/prod依赖
+#   - poetry.lock：Poetry工具，更现代的依赖管理
+#
+# Q2: 如何处理依赖冲突？
+# A:
+#   1. 使用 pip install --upgrade 尝试升级
+#   2. 使用 pipdeptree 查看依赖树
+#   3. 考虑使用虚拟环境隔离
+#   4. 最坏情况：降级某些包或寻找替代品
+#
+# Q3: 生产环境如何确保依赖安全？
+# A:
+#   1. 定期运行 safety check
+#   2. 使用 Dependabot 自动化依赖更新
+#   3. 在CI/CD中集成安全扫描
+#   4. 订阅安全公告（如GitHub Security Advisories）

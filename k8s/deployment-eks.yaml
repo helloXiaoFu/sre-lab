@@ -1,0 +1,127 @@
+# ============================================
+# EKS环境的Deployment配置
+# 与本地K8s的区别：使用ECR镜像URI
+# ============================================
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mao-quotes-api
+  labels:
+    app: mao-api
+    version: v1
+spec:
+  replicas: 3  # 3个副本，分布在2个可用区
+  selector:
+    matchLabels:
+      app: mao-api
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 1
+  template:
+    metadata:
+      labels:
+        app: mao-api
+        version: v1
+    spec:
+      containers:
+      - name: api
+        # ⭐ 关键区别：使用ECR镜像URI
+        image: <YOUR_AWS_ACCOUNT_ID>.dkr.ecr.us-east-1.amazonaws.com/mao-quotes-api:v1
+        imagePullPolicy: IfNotPresent
+        
+        ports:
+        - name: http
+          containerPort: 8000
+          protocol: TCP
+        
+        env:
+        - name: ENV
+          value: "production"
+        - name: LOG_LEVEL
+          value: "info"
+        - name: WORKERS
+          value: "1"
+        
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "250m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+        
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 15
+          periodSeconds: 10
+          timeoutSeconds: 3
+          failureThreshold: 3
+        
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 8000
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 2
+          failureThreshold: 2
+
+---
+# ============================================
+# Service配置（使用LoadBalancer类型）
+# 在EKS中会自动创建AWS NLB（网络负载均衡器）
+# ============================================
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: mao-quotes-service
+  labels:
+    app: mao-api
+spec:
+  selector:
+    app: mao-api
+  ports:
+  - name: http
+    protocol: TCP
+    port: 80          # Service端口
+    targetPort: 8000  # Pod端口
+  type: LoadBalancer  # ⭐ EKS会自动创建NLB
+  
+  # 可选：配置NLB行为
+  # annotations:
+  #   service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
+  #   service.beta.kubernetes.io/aws-load-balancer-cross-zone-load-balancing-enabled: "true"
+  #   service.beta.kubernetes.io/aws-load-balancer-backend-protocol: "http"
+
+# ============================================
+# 说明：LoadBalancer vs NodePort
+# ============================================
+# 
+# 本地K8s（Phase 3）：
+#   type: NodePort
+#   访问：http://localhost:30080
+#   
+# AWS EKS：
+#   type: LoadBalancer
+#   访问：http://<NLB-DNS-Name>
+#   AWS自动创建：
+#   ├── NLB（网络负载均衡器）
+#   ├── Target Group（目标组，包含所有Worker节点）
+#   └── 健康检查（自动检测节点健康）
+#
+# LoadBalancer优势：
+# ✅ 真实的公网访问
+# ✅ 自动健康检查
+# ✅ 跨可用区负载均衡
+# ✅ SSL/TLS终止（如果配置）
+# ✅ 99.99% SLA
+#
+# 成本：
+# NLB：$0.0225/小时 + $0.006/LCU-小时
+# 约$0.03/小时 = $0.72/天 = $21.6/月
