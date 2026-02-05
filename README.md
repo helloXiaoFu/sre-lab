@@ -360,9 +360,8 @@ MIT License - see [LICENSE](LICENSE) file for details
 
 ## Contact & Feedback
 
-For questions or suggestions, please open an issue or contact via:
-- GitHub Issues: https://github.com/<YOUR_USERNAME>/sre-lab/issues
-- Email: your.email@example.com
+For questions or suggestions, please open an issue:
+- GitHub Issues: https://github.com/helloXiaoFu/sre-lab/issues
 
 ---
 
@@ -377,4 +376,4 @@ This project demonstrates enterprise-level SRE practices including:
 
 ---
 
-**Built with ❤️ for learning and practicing enterprise SRE skills**
+**Production-ready SRE infrastructure demonstrating enterprise best practices**
